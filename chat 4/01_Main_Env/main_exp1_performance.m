@@ -65,14 +65,26 @@ disp(['算法 B 运行完成，总耗时: ', num2str(time_B), ' 秒']);
 disp('>>> 正在保存实验一仿真数据...');
 save_stamp = datestr(now, 'yyyymmdd_HHMMSS');
 
-% 保存环境参数与跑完的结果 (Target_Init_Ch4 必须保存，因为甘特图和OSPA图需要读取出生时间)
+% 保存环境参数与跑完的结果 (Target_Init必须保存，因为甘特图和OSPA图需要读取出生时间)
 % 以当前脚本位置为基准保存，避免工作目录不同导致路径找不到
 this_dir = fileparts(mfilename('fullpath')); % chat4/01_Main_Env
+if isempty(this_dir)
+    % 兜底：在某些情况下（如仅执行片段/非文件上下文运行），mfilename 可能返回空
+    this_path = which('main_exp1_performance.m');
+    if ~isempty(this_path)
+        this_dir = fileparts(this_path);
+    end
+end
+
 chat4_root = fileparts(this_dir);            % chat4
 data_dir = fullfile(chat4_root, '04_Data');
 if ~exist(data_dir, 'dir'), mkdir(data_dir); end
 save_file_name = fullfile(data_dir, sprintf('Exp1_Result_%s.mat', save_stamp));
-save(save_file_name, 'Target_Init_Ch4', 'Xreal_target_time', 'Xreal_time_target', ...
+% 再做一次目录存在性兜底（避免并发/权限导致的目录创建失败）
+if ~exist(data_dir, 'dir')
+    error('结果目录不存在：%s', data_dir);
+end
+save(save_file_name, 'Target_Init', 'Xreal_target_time', 'Xreal_time_target', ...
                      'result_A', 'result_B', 'ch4_cfg');
 
 disp(['实验一仿真完成！结果已存至: ', save_file_name]);

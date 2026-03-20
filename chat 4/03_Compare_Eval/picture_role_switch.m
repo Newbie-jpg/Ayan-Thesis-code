@@ -20,7 +20,6 @@ disp('>>> 正在加载实验一结果数据 (.mat)...');
 
 % 自动寻找最新保存的 Exp1 文件
 mat_files = dir(fullfile(data_dir, 'Exp1_Result_*.mat'));
-mat_files = dir('Exp1_Result_20260320_215747.mat');
 if isempty(mat_files)
     error('未在 %s 目录下找到 Exp1_Result 文件。请先运行 main_exp1_performance.m', data_dir);
 end

@@ -52,7 +52,7 @@ legend({'Algorithm B: Joint Optimization (Baseline)', ...
 
 % 标注：目标 1 出生时刻（若存在）
 try
-    tgt1_birth = Target_Init_Ch4(7, 1);
+    tgt1_birth = Target_Init(7, 1);
     y_limits = ylim;
     plot([tgt1_birth, tgt1_birth], y_limits, 'k-.', 'LineWidth', 1.5);
     text(tgt1_birth + 1, y_limits(2) * 0.85, '\leftarrow Target 1 Born', ...
@@ -62,16 +62,15 @@ end
 
 saveas(gcf, fullfile(fig_dir, 'Fig_Exp1_OSPA.jpg'));
 print(fullfile(fig_dir, 'Fig_Exp1_OSPA.jpg'), '-djpeg', '-r300');
-
 %% 3. 发现目标统计（累计发现数量 & 平均发现延迟）
 % discovery_cutoff：判定“发现”的距离阈值（与 ospa_dist 的 cutoff=120 相同更一致）
 discovery_cutoff = 120;
 % metric_type：'count' / 'delay' / 'both'
 metric_type = 'both';
 
-birth_times = Target_Init_Ch4(7, :);
-death_times = Target_Init_Ch4(8, :);
-n_target = size(Target_Init_Ch4, 2);
+birth_times = Target_Init(7, :);
+death_times = Target_Init(8, :);
+n_target = size(Target_Init, 2);
 
 methods = {result_A, result_B};
 method_names = {'Algorithm A', 'Algorithm B'};
