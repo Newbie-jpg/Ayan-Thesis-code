@@ -1,7 +1,6 @@
 clear;
 
 %% 初始化（必须先运行以得到 N, M, N_sensor）
-addpath(genpath(pwd))
  config;
 save('Xreal_target_time.mat','Xreal_target_time')
 
