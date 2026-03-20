@@ -117,6 +117,35 @@ function [selection, action, cost, detail] = control_core(fused_posterior, senso
         end
     end
 
+    % =========================
+    % 进一步加速：缓存 GA 融合的对数概率
+    % =========================
+    % Fuse_GridProb_GA 默认使用等权几何平均：
+    %   p_fuse = exp( (1/N) * sum_i log(p_i) )
+    % 这里把 log(p_i) 预计算，从而在 cc 循环内避免重复 log/clip/结构体拷贝。
+    pred_fused_GA = [];
+    log_after_cache = [];
+    if use_grid_objective
+        clip_eps = 1e-12;
+        M_grid = GridMap.M;
+        pred_log_sum = zeros(M_grid, 1);
+        log_after_cache = cell(N_sensor, nC); % log_after_cache{i,ci}: M_grid×1
+
+        for i = 1:N_sensor
+            p_pred = omega_pred_L{i}(:);
+            p_pred = min(max(p_pred, clip_eps), 1);
+            pred_log_sum = pred_log_sum + log(p_pred);
+
+            for ci = 1:nC
+                p_after = grid_after_cache{i, ci}(:);
+                p_after = min(max(p_after, clip_eps), 1);
+                log_after_cache{i, ci} = log(p_after);
+            end
+        end
+        pred_fused_GA = exp(pred_log_sum / N_sensor);
+        pred_fused_GA = min(max(pred_fused_GA, 0), 1);
+    end
+
     % 5. 位置约束 + 遍历联合动作（确定性枚举，不随机采样）
     x_min = -1750; x_max = 1750;
     y_min = -1750; y_max = 1750;
@@ -217,7 +246,7 @@ function [selection, action, cost, detail] = control_core(fused_posterior, senso
         end
 
         if objective_mode == "grid"
-            J_info = compute_grid_gain(omega_pred_L, loc_after, sel, sensor_inf, GridMap, grid_after_cache);
+            J_info = compute_grid_gain_cached(sel, pred_fused_GA, log_after_cache, N_sensor);
             J_total = J_tr - opt.eta * J_info;
             J_cs_cand = NaN;
             J_cs_improved_cand = NaN;
@@ -231,7 +260,7 @@ function [selection, action, cost, detail] = control_core(fused_posterior, senso
             % 联合网格收益：在最小化框架下等价于最小化 -theta - eta*J_search
             J_cs_cand = safe_cs_divergence(state_pred, pseudo_fused);
             J_cs_improved_cand = improved_cs_objective(state_pred, pseudo_fused, J_cs_cand);
-            J_info = compute_grid_gain(omega_pred_L, loc_after, sel, sensor_inf, GridMap, grid_after_cache);
+            J_info = compute_grid_gain_cached(sel, pred_fused_GA, log_after_cache, N_sensor);
             J_total = -J_cs_improved_cand - opt.eta * J_info;
         else
             error('control_core:UnknownObjectiveMode', ...
@@ -255,7 +284,7 @@ function [selection, action, cost, detail] = control_core(fused_posterior, senso
 
     % 对最优动作补算两类信息增益，便于主程序做算法比较图
     if use_grid_objective
-        best_J_sr = compute_grid_gain(omega_pred_L, loc_after, best_sel, sensor_inf, GridMap, grid_after_cache);
+        best_J_sr = compute_grid_gain_cached(best_sel, pred_fused_GA, log_after_cache, N_sensor);
     else
         best_J_sr = NaN;
     end
@@ -308,6 +337,27 @@ function J_sr = compute_grid_gain(omega_pred_L, loc_after, sel, sensor_inf, Grid
     GridProb_pred_fused = Fuse_GridProb_GA(pred_sensor);
     GridProb_post_fused = Fuse_GridProb_GA(pseudo_sensor);
     delta = max(GridProb_pred_fused - GridProb_post_fused, 0);
+    J_sr = mean(delta);
+end
+
+function J_sr = compute_grid_gain_cached(sel, pred_fused_GA, log_after_cache, N_sensor)
+% 计算 J_search 的缓存加速版本：
+%   J_search = mean( max(p_pred_fused - p_post_fused, 0) )
+% 其中 p_fuse 使用 Fuse_GridProb_GA 的等权 GA 融合（等价于几何平均）。
+    if isempty(pred_fused_GA)
+        J_sr = 0;
+        return;
+    end
+    M_grid = numel(pred_fused_GA);
+    post_log_sum = zeros(M_grid, 1);
+    for i = 1:N_sensor
+        ci = sel(i);
+        post_log_sum = post_log_sum + log_after_cache{i, ci};
+    end
+    p_post_fused = exp(post_log_sum / N_sensor);
+    p_post_fused = min(max(p_post_fused, 0), 1);
+    delta = pred_fused_GA - p_post_fused;
+    delta(delta < 0) = 0;
     J_sr = mean(delta);
 end
 
