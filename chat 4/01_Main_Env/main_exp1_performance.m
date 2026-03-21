@@ -25,8 +25,8 @@ for i = 1:N_sensor
 end
 
 tic_A = tic;
-% 运行重构的两阶段控制主循环
-result_A = run_control_twostage(Xreal_time_target, Sensor_distr_A, N, GridMap, sim_cfg, ch4_cfg);
+% 运行重构的两阶段控制主循环（蒙特卡洛封装，M>1 并行）
+result_A = run_control_twostage_scheme(Xreal_time_target, Sensor_distr_A, N, GridMap, sim_cfg, ch4_cfg, M, sim_cfg.rng_seed);
 time_A = toc(tic_A);
 
 result_A.name = '本文算法：任务分配两阶段管控';
