@@ -4,37 +4,29 @@
 %   - 目标真实轨迹、起点与终点
 %
 % 使用方法：
-%   先运行 chat4/01_Main_Env/main_exp1_performance.m 生成 Exp1_Result_*.mat
-%   再运行本脚本生成场景图
+%   直接运行本脚本，将通过 config.m 动态读取配置并生成场景图
 
 clear; close all; clc;
 
-%% 0. 路径准备：以脚本位置为基准，避免工作目录不一致
+%% 0. 路径准备：以脚本位置为基准
 script_dir = fileparts(mfilename('fullpath')); % chat4/03_Compare_Eval
 chat4_root = fileparts(script_dir);            % chat4
-data_dir = fullfile(chat4_root, '04_Data');
 fig_dir = fullfile(script_dir, 'Result_Fig_Ch4');
 if ~exist(fig_dir, 'dir'), mkdir(fig_dir); end
 
-%% 1. 初始化配置与自动加载最新仿真数据
-disp('>>> 正在初始化配置并加载最新仿真数据...');
+%% 1. 初始化配置与动态生成轨迹
+disp('>>> 正在读取 config.m 配置并生成场景轨迹...');
 
-% (1) 添加主程序路径以调用 config.m，获取环境边界与传感器分布等基础配置
+% 添加主程序路径以调用 config.m 和相关函数
 main_env_dir = fullfile(chat4_root, '01_Main_Env');
 addpath(main_env_dir);
+
+% 加载全局参数与场景配置 (包含 N, Target_Init, Sensor_distr, 边界范围等)
 config; 
 
-% (2) 自动寻找并加载最新的 Exp1_Result_*.mat 获取实际目标轨迹
-mat_files = dir(fullfile(data_dir, 'Exp1_Result_*.mat'));
-if isempty(mat_files)
-    error('未在 %s 目录下找到 Exp1_Result_*.mat。请先运行 main_exp1_performance.m', data_dir);
-end
-[~, latest_idx] = max([mat_files.datenum]);
-target_file = fullfile(mat_files(latest_idx).folder, mat_files(latest_idx).name);
-
-% 仅加载目标真实轨迹，避免覆盖 config 中的环境配置变量
-load(target_file, 'Xreal_target_time'); 
-disp(['成功加载轨迹数据: ', mat_files(latest_idx).name]);
+% 直接调用 targetset 生成目标真实轨迹，无需读取跑完的 .mat 文件
+[Xreal_target_time, ~] = targetset(N, Target_Init);
+disp('>>> 成功基于 config 配置生成目标真实轨迹。');
 
 %% 2. 开始绘制场景图
 figure('Position', [150, 150, 800, 600], 'Name', 'Exp1 仿真场景', 'Color', 'w');
@@ -77,6 +69,7 @@ for j = 1:n_target
     end
     px = traj(1, :);  % x 位置
     py = traj(3, :);  % y 位置
+    
     valid = ~isnan(px);
     if sum(valid) == 0, continue; end
     px = px(valid);

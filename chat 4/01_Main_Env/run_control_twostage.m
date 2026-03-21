@@ -7,17 +7,30 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     % --- 一些系统默认运行参数 ---
     Ps = 1; Vx_thre = 200; Vy_thre = 200; Vz_thre = 200;
     match_threshold = sim_cfg.algo_baseline.match_threshold;
-    control_interval = 1; % 动作更新间隔
+    control_interval = 5; % 动作更新间隔（每 5 个时刻决策一次）
     
     % 初始化记录变量
     task_log = cell(N, 1); 
     OSPA = zeros(1, N);
     Num_estimate = zeros(1, N);
     Time_total = 0;
+    step_time_series = zeros(1, N);
     X_est_global = cell(N, 1);
     Sensor_traj = zeros(3, N, N_sensor);
     
     Sensor = Sensor_distr;
+    fixed_groups = ch4_cfg.fixed_search_target_groups;
+    target_init = sim_cfg.target_init;
+    oracle_cfg_A = ch4_cfg.oracle_cfg;
+    use_oracle_guidance = true;
+    if isfield(ch4_cfg, 'enable_oracle_guidance') && ~isempty(ch4_cfg.enable_oracle_guidance)
+        use_oracle_guidance = logical(ch4_cfg.enable_oracle_guidance);
+    end
+    default_heading = 0;
+    prev_heading_deg = default_heading * ones(1, N_sensor);
+    last_action_cmd = [];
+    last_roles = repmat({'S'}, 1, N_sensor);
+    last_opt_actions = [];
 
     % 进度/剩余时间估计（算法A）
     tic_total = tic;
@@ -99,100 +112,118 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
         % 运行融合算法
         [Fusion_center.results] = Centralized_Fusion_AGM(Fusion_center.sensor_inf, match_threshold);
         Fusion_center.GridProb_fused = Fuse_GridProb_GA(Fusion_center.sensor_inf);
+        GridMap.GridProb = Fusion_center.GridProb_fused;
         
         % 提取全局估计用于计算指标
         [X_est_global{t,1},~] = statedraw_3d(Fusion_center.results);
         
-        %% ====== 【第四章核心阶段 3：任务分配】 ======
-        % 将融合结果赋给 v_fused，供任务分配使用
-        v_fused = Fusion_center.results; 
-        
-        % 更新全局网格概率到 GridMap
-        GridMap.GridProb = Fusion_center.GridProb_fused;
-        
-        % 调用第四章的任务分配逻辑
-        Sensor = dynamic_task_allocation(Sensor, v_fused, ch4_cfg);
-        
-        % 记录当前角色用于画图
-        current_roles = {Sensor.task_type};
-        task_log{t} = current_roles;
-        
-        %% ====== 【第四章核心阶段 4：分组决策优化】 ======
-        s_indices = find(strcmp(current_roles, 'S'));
-        t_indices = find(strcmp(current_roles, 'T'));
-        opt_actions = zeros(1, N_sensor);
-        
-        % --- (1) 针对 S 传感器：贪心网格规划 ---
-        if ~isempty(s_indices)
-            S_sensors_array = Sensor(s_indices);
-            [s_opt_actions, ~] = greedy_path_planner(S_sensors_array, GridMap, sensor_params, ch4_cfg.search_threshold);
-            for idx = 1:length(s_indices)
-                opt_actions(s_indices(idx)) = s_opt_actions(idx);
+        %% ====== 【阶段 3+4：按开关选择策略】 ======
+        % 方案A-Oracle: 视域内带噪真值跟踪 + 视域外固定组合搜索
+        % 方案A-Paper : 第四章论文原始两阶段逻辑
+        if use_oracle_guidance
+            if isempty(last_action_cmd) || mod(t - 3, control_interval) == 0
+                [action_cmd, current_roles, heading_deg] = build_oracle_guidance_actions( ...
+                    Sensor, Xreal_time_target{t,1}, target_init, fixed_groups, sensor_params, oracle_cfg_A, t, prev_heading_deg);
+                prev_heading_deg = heading_deg;
+                last_action_cmd = action_cmd;
+                last_roles = current_roles;
+            else
+                action_cmd = last_action_cmd;
+                current_roles = last_roles;
             end
-        end
-        
-        % --- (2) 针对 T 传感器：跟踪精度优化（联合分组决策）---
-        if ~isempty(t_indices)
-            % 伪预测：为 k+L|k 生成先验 GM-PHD（CV 模型）
-            T_s = sensor_params.T;
-            F = [1 T_s 0 0 0 0;
-                 0 1 0 0 0 0;
-                 0 0 1 T_s 0 0;
-                 0 0 0 1 0 0;
-                 0 0 0 0 1 T_s;
-                 0 0 0 0 0 1];
-            Q = diag([1, 0.1, 1, 0.1, 1, 0.1]);
-            
-            v_fused_pred = PHD_predict_L_steps(v_fused, sensor_params.L, F, Q);
-            
-            % 提取用于生成伪量测的先验目标集合 X_prior
-            weight_thresh = 0.1;
-            X_prior = [];
-            if v_fused_pred{4,1} > 0
-                ww = v_fused_pred{1,1};
-                mm = v_fused_pred{2,1};
-                for jj = 1:v_fused_pred{4,1}
-                    if ww(jj) >= weight_thresh
-                        X_prior = [X_prior, mm(:, jj)];
+            task_log{t} = current_roles;
+        else
+            if isempty(last_opt_actions) || mod(t - 3, control_interval) == 0
+                v_fused = Fusion_center.results;
+                Sensor = dynamic_task_allocation(Sensor, v_fused, ch4_cfg);
+                current_roles = {Sensor.task_type};
+                opt_actions = zeros(1, N_sensor);
+
+                s_indices = find(strcmp(current_roles, 'S'));
+                t_indices = find(strcmp(current_roles, 'T'));
+
+                if ~isempty(s_indices)
+                    S_sensors_array = Sensor(s_indices);
+                    [s_opt_actions, ~] = greedy_path_planner(S_sensors_array, GridMap, sensor_params, ch4_cfg.search_threshold);
+                    for idx = 1:length(s_indices)
+                        opt_actions(s_indices(idx)) = s_opt_actions(idx);
                     end
                 end
+
+                if ~isempty(t_indices)
+                    T_s = sensor_params.T;
+                    F = [1 T_s 0 0 0 0;
+                         0 1 0 0 0 0;
+                         0 0 1 T_s 0 0;
+                         0 0 0 1 0 0;
+                         0 0 0 0 1 T_s;
+                         0 0 0 0 0 1];
+                    Q = diag([1, 0.1, 1, 0.1, 1, 0.1]);
+                    v_fused_pred = PHD_predict_L_steps(v_fused, sensor_params.L, F, Q);
+
+                    weight_thresh = 0.1;
+                    X_prior = [];
+                    if v_fused_pred{4,1} > 0
+                        ww = v_fused_pred{1,1};
+                        mm = v_fused_pred{2,1};
+                        for jj = 1:v_fused_pred{4,1}
+                            if ww(jj) >= weight_thresh
+                                X_prior = [X_prior, mm(:, jj)]; %#ok<AGROW>
+                            end
+                        end
+                    end
+
+                    [PIMS_cell, loc_after, valid_idx] = PIMS_generate(X_prior, Sensor, sensor_params, sensor_params.L);
+                    opt_actions_T = control_core_T(t_indices, Sensor, v_fused_pred, ...
+                        PIMS_cell, loc_after, valid_idx, ch4_cfg, sensor_params, match_threshold);
+                    for idx = 1:length(t_indices)
+                        opt_actions(t_indices(idx)) = opt_actions_T(idx);
+                    end
+                end
+
+                last_opt_actions = opt_actions;
+                last_roles = current_roles;
+            else
+                opt_actions = last_opt_actions;
+                current_roles = last_roles;
             end
-            
-            % 生成所有传感器在每个候选动作下的 PIMS（用于 T 分组联合跟踪决策）
-            [PIMS_cell, loc_after, valid_idx] = PIMS_generate(X_prior, Sensor, sensor_params, sensor_params.L);
-            
-            % 对 T 传感器集合做联合枚举，最小化 J_track
-            opt_actions_T = control_core_T(t_indices, Sensor, v_fused_pred, ...
-                PIMS_cell, loc_after, valid_idx, ch4_cfg, sensor_params, match_threshold);
-            
-            for idx = 1:length(t_indices)
-                opt_actions(t_indices(idx)) = opt_actions_T(idx);
+
+            action_cmd = zeros(2, N_sensor);
+            for i = 1:N_sensor
+                idx_i = opt_actions(i);
+                if idx_i <= 0 || idx_i > numel(sensor_params.C)
+                    idx0 = find(sensor_params.C == 0, 1, 'first');
+                    if isempty(idx0), idx0 = 1; end
+                    idx_i = idx0;
+                end
+                action_cmd(1, i) = sensor_params.C(idx_i);
+                action_cmd(2, i) = 0;
             end
+            task_log{t} = current_roles;
         end
-        
         %% 【阶段 5】：执行动作与状态推进
         for i = 1 : N_sensor
-            chosen_action_idx = opt_actions(i);
-            if chosen_action_idx == 0 
-                chosen_action_idx = find(sensor_params.C == 0); % 异常兜底：直飞
+            act_beta = action_cmd(1, i);
+            act_epsilon = 0;
+            dt_sec = sensor_params.T;
+            v_eff = sensor_params.v;
+            if use_oracle_guidance && strcmp(current_roles{i}, 'S') && isfield(oracle_cfg_A, 'search_speed_scale')
+                v_eff = sensor_params.v * oracle_cfg_A.search_speed_scale;
             end
             
-            % 读取选中的偏航角并更新传感器位置
-            act_beta = sensor_params.C(chosen_action_idx);
-            act_epsilon = 0; % 假设只在XY平面转弯，Z固定
-            dt_sec = sensor_params.T;
-            
-            dx = sensor_params.v * cos(deg2rad(act_epsilon)) * cos(deg2rad(act_beta)) * dt_sec;
-            dy = sensor_params.v * cos(deg2rad(act_epsilon)) * sin(deg2rad(act_beta)) * dt_sec;
-            dz = sensor_params.v * sin(deg2rad(act_epsilon)) * dt_sec;
+            dx = v_eff * cos(deg2rad(act_epsilon)) * cos(deg2rad(act_beta)) * dt_sec;
+            dy = v_eff * cos(deg2rad(act_epsilon)) * sin(deg2rad(act_beta)) * dt_sec;
+            dz = v_eff * sin(deg2rad(act_epsilon)) * dt_sec;
             
             Sensor(i).location = Sensor(i).location + [dx; dy; dz];
             Sensor_traj(:, t, i) = Sensor(i).location(:);
+            Sensor(i).task_type = current_roles{i};
         end
         
         %% 记录该步耗时与性能指标
         dt_step = toc(timing);
         Time_total = Time_total + dt_step;
+        step_time_series(t) = dt_step;
         
         % 更新剩余时间（低频刷新，避免刷屏）
         steps_done = t - 2;
@@ -216,6 +247,8 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     result.OSPA_avg = OSPA;
     result.Num_avg = Num_estimate;
     result.Time_avg = Time_total / (N - 2); 
+    result.step_time_series = step_time_series;
+    result.cum_time_series = cumsum(step_time_series);
     result.X_est_vis = X_est_global;
     result.Sensor_traj_vis = Sensor_traj;
 end

@@ -40,7 +40,11 @@ parallel_opt = set_default_fields(parallel_opt, struct( ...
 control_opt = set_default_fields(control_opt, struct( ...
     'match_threshold', 200, ...
     'eta', 50000, ...
-    'beta', 500));
+    'beta', 500, ...
+    'enable_oracle_tracking', false, ...
+    'oracle_cfg', struct('enable', false), ...
+    'fixed_search_target_groups', {{}}, ...
+    'target_init', []));
 
 Ps = process_opt.Ps; % 存活概率
 Vx_thre = process_opt.Vx_thre;
@@ -105,9 +109,14 @@ X_est_global{2,1} = zeros(6,0);
 Time=0;
 control_interval = process_opt.control_interval;  % 每隔 control_interval 个时刻更新一次控制动作
 last_action = [];      % 缓存上一次控制动作
+prev_heading_deg = zeros(1, N_sensor);
+current_roles = repmat({'S'}, 1, N_sensor);
+last_roles = current_roles;
 decision_log = struct('times', [], 'track_cost', [], 'search_gain', [], ...
     'cs_gain', [], 'info_gain', [], 'total_cost', [], 'selection', [], ...
-    'objective_mode', '');
+    'objective_mode', '', 'step_time_series', zeros(1, N), 'role_log', []);
+decision_log.role_log{1} = current_roles;
+decision_log.role_log{2} = current_roles;
 total_steps = N - 2; % t 从 3 开始到 N 共 N-2 次
 progress_refresh = max(1, floor(total_steps / 10)); % 约每10%刷新一次
 display_time_total = 0; % 用于 ETA 显示（只做展示，不影响原始 Time 统计）
@@ -174,7 +183,28 @@ for t = 3:N
     end
 
     %=== 核心控制：每隔固定时刻更新一次动作，其余时刻沿用上一时刻动作 ===
-    if isempty(last_action) || mod(t - 3, control_interval) == 0
+    if control_opt.enable_oracle_tracking
+        if isempty(last_action) || mod(t - 3, control_interval) == 0
+            [action, current_roles, heading_deg] = build_oracle_guidance_actions( ...
+                Sensor, Xreal_time_target{t,1}, control_opt.target_init, ...
+                control_opt.fixed_search_target_groups, sensor, control_opt.oracle_cfg, t, prev_heading_deg);
+            prev_heading_deg = heading_deg;
+            last_action = action;
+            last_roles = current_roles;
+
+            decision_log.times(end+1) = t; %#ok<AGROW>
+            decision_log.track_cost(end+1) = NaN; %#ok<AGROW>
+            decision_log.search_gain(end+1) = NaN; %#ok<AGROW>
+            decision_log.cs_gain(end+1) = NaN; %#ok<AGROW>
+            decision_log.info_gain(end+1) = NaN; %#ok<AGROW>
+            decision_log.total_cost(end+1) = NaN; %#ok<AGROW>
+            decision_log.selection(:, end+1) = zeros(N_sensor,1); %#ok<AGROW>
+            decision_log.objective_mode = 'oracle_fixed_combo';
+        else
+            action = last_action;
+            current_roles = last_roles;
+        end
+    elseif isempty(last_action) || mod(t - 3, control_interval) == 0
         control_opt_run = control_opt;
         [~, action, ~, control_detail] = control_core( ...
             Fusion_center.results, Fusion_center.sensor_inf, GridMap, sensor, control_opt_run);
@@ -200,9 +230,14 @@ for t = 3:N
         % config 中 T 的单位为秒，位移应按 v*T 计算
         dt_sec = sensor.T; 
         
-        dx = sensor.v * cos(deg2rad(act_epsilon)) * cos(deg2rad(act_beta)) * dt_sec;
-        dy = sensor.v * cos(deg2rad(act_epsilon)) * sin(deg2rad(act_beta)) * dt_sec;
-        dz = sensor.v * sin(deg2rad(act_epsilon)) * dt_sec;
+        v_eff = sensor.v;
+        if control_opt.enable_oracle_tracking && strcmp(current_roles{i}, 'S') && ...
+                isfield(control_opt.oracle_cfg, 'search_speed_scale')
+            v_eff = sensor.v * control_opt.oracle_cfg.search_speed_scale;
+        end
+        dx = v_eff * cos(deg2rad(act_epsilon)) * cos(deg2rad(act_beta)) * dt_sec;
+        dy = v_eff * cos(deg2rad(act_epsilon)) * sin(deg2rad(act_beta)) * dt_sec;
+        dz = v_eff * sin(deg2rad(act_epsilon)) * dt_sec;
         
         % 移动传感器到新位置
         Sensor(i).location = Sensor(i).location + [dx; dy; dz];
@@ -219,6 +254,8 @@ for t = 3:N
     % 计算该步总耗时（用于 ETA）
     dt_total = toc(timing_total);
     display_time_total = display_time_total + dt_total;
+    decision_log.step_time_series(t) = dt_total;
+    decision_log.role_log{t} = current_roles;
     steps_done = t - 2;
     if m == 1 && isempty(getCurrentTask()) && (mod(steps_done, progress_refresh) == 0 || t == N)
         avg_step = display_time_total / steps_done;

@@ -54,7 +54,7 @@ tic_B = tic;
 % 注: M(蒙特卡洛次数) 已在 config.m 中定义，此处直接传入
 result_B = run_control_scheme(algo_cfg_B, Xreal_time_target, Sensor_distr_B, ...
     N, GridMap, selection, sim_cfg.sensor, M, sim_cfg.rng_seed, ...
-    struct('Ps', 1, 'control_interval', 1), struct('min_pool_size', 1));
+    struct('Ps', 1, 'control_interval', 5), struct('min_pool_size', 1));
 time_B = toc(tic_B);
 
 result_B.name = '基线算法：第三章联合加权优化';
@@ -85,7 +85,7 @@ if ~exist(data_dir, 'dir')
     error('结果目录不存在：%s', data_dir);
 end
 save(save_file_name, 'Target_Init', 'Xreal_target_time', 'Xreal_time_target', ...
-                     'result_A', 'result_B', 'ch4_cfg');
+                     'result_A', 'result_B', 'ch4_cfg', 'sim_cfg', 'Sensor_distr');
 
 disp(['实验一仿真完成！结果已存至: ', save_file_name]);
 disp('您可以运行 picture_role_switch.m 或 picture_exp1_ospa.m 来查看结果图表了。');
