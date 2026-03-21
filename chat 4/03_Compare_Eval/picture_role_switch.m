@@ -50,9 +50,9 @@ for k = 1:N_steps
 end
 
 %% 3. 提取目标的关键生命周期信息 (用于在图中添加标注)
-% Target_Init_Ch4 格式为 N_attrs x N_targets
-birth_times = Target_Init_Ch4(7, :); % 提取 t_start
-death_times = Target_Init_Ch4(8, :); % 提取 t_end
+% Target_Init 格式为 N_attrs x N_targets
+birth_times = Target_Init(7, :); % 提取 t_start
+death_times = Target_Init(8, :); % 提取 t_end
 
 % 提取 Target 1 (用于响应验证)
 tgt1_birth = birth_times(1); % 应该是 20

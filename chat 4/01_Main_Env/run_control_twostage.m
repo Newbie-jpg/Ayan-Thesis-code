@@ -15,6 +15,7 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     Num_estimate = zeros(1, N);
     Time_total = 0;
     X_est_global = cell(N, 1);
+    Sensor_traj = zeros(3, N, N_sensor);
     
     Sensor = Sensor_distr;
 
@@ -44,6 +45,12 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
         
         Z_p2 = observe_FoV_3d_single(Xreal_time_target{2,1}, Sensor(i).location, Sensor(i).R_detect, Sensor(i).Pd, Sensor(i).Zr, Sensor(i).R_params);
         Sensor(i).Z_dicaer_global{2,1} = polar2dicaer_3d_single(Z_p2, Sensor(i).location(1), Sensor(i).location(2), Sensor(i).location(3));
+        
+        % 记录轨迹初始点（t=1,2）
+        Sensor_traj(:,1,i) = Sensor(i).location(:);
+        if N >= 2
+            Sensor_traj(:,2,i) = Sensor(i).location(:);
+        end
     end
     X_est_global{1,1} = zeros(6,0); X_est_global{2,1} = zeros(6,0);
     
@@ -180,6 +187,7 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
             dz = sensor_params.v * sin(deg2rad(act_epsilon)) * dt_sec;
             
             Sensor(i).location = Sensor(i).location + [dx; dy; dz];
+            Sensor_traj(:, t, i) = Sensor(i).location(:);
         end
         
         %% 记录该步耗时与性能指标
@@ -209,4 +217,5 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     result.Num_avg = Num_estimate;
     result.Time_avg = Time_total / (N - 2); 
     result.X_est_vis = X_est_global;
+    result.Sensor_traj_vis = Sensor_traj;
 end
