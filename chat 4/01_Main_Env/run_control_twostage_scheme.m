@@ -20,6 +20,7 @@ function result = run_control_twostage_scheme(Xreal_time_target, Sensor_distr_A,
     Sensor_traj_vis = [];
     X_est_vis = [];
     task_log_vis = [];
+    mc_sensor_traj = cell(M, 1);
 
     if M > 1
         % 先确保有并行池（与B算法并行蒙特卡洛行为保持一致）
@@ -35,11 +36,11 @@ function result = run_control_twostage_scheme(Xreal_time_target, Sensor_distr_A,
         est_store = cell(M, 1);
         task_store = cell(M, 1);
 
+        disp(['算法 A 蒙特卡洛并行运行中，总次数 M=', num2str(M), ' ...']);
         parfor m = 1:M
-            disp(['正在运行算法 A 的第 ', num2str(m), '/', num2str(M), ' 次蒙特卡洛仿真...']);
-
             Sensor_distr_A_m = Sensor_distr_A;
-            res_m = run_control_twostage(Xreal_time_target, Sensor_distr_A_m, N, GridMap, sim_cfg, ch4_cfg);
+            runtime_opt = struct('verbose', false);
+            res_m = run_control_twostage(Xreal_time_target, Sensor_distr_A_m, N, GridMap, sim_cfg, ch4_cfg, runtime_opt);
 
             OSPA_store{m} = res_m.OSPA_avg;
             Num_store{m} = res_m.Num_avg;
@@ -54,6 +55,7 @@ function result = run_control_twostage_scheme(Xreal_time_target, Sensor_distr_A,
             end
 
             traj_store{m} = res_m.Sensor_traj_vis;
+            mc_sensor_traj{m} = res_m.Sensor_traj_vis;
             est_store{m} = res_m.X_est_vis;
             if isfield(res_m, 'task_log')
                 task_store{m} = res_m.task_log;
@@ -72,11 +74,13 @@ function result = run_control_twostage_scheme(Xreal_time_target, Sensor_distr_A,
         Sensor_traj_vis = traj_store{1};
         X_est_vis = est_store{1};
         task_log_vis = task_store{1};
+        disp('算法 A 并行蒙特卡洛运行完成。');
     else
         for m = 1:M
             disp(['正在运行算法 A 的第 ', num2str(m), '/', num2str(M), ' 次蒙特卡洛仿真...']);
             Sensor_distr_A_m = Sensor_distr_A;
-            res_m = run_control_twostage(Xreal_time_target, Sensor_distr_A_m, N, GridMap, sim_cfg, ch4_cfg);
+            runtime_opt = struct('verbose', true);
+            res_m = run_control_twostage(Xreal_time_target, Sensor_distr_A_m, N, GridMap, sim_cfg, ch4_cfg, runtime_opt);
 
             OSPA_total = OSPA_total + res_m.OSPA_avg;
             Num_total = Num_total + res_m.Num_avg;
@@ -97,6 +101,7 @@ function result = run_control_twostage_scheme(Xreal_time_target, Sensor_distr_A,
                     task_log_vis = res_m.task_log;
                 end
             end
+            mc_sensor_traj{m} = res_m.Sensor_traj_vis;
         end
     end
 
@@ -110,4 +115,5 @@ function result = run_control_twostage_scheme(Xreal_time_target, Sensor_distr_A,
     result.Sensor_traj_vis = Sensor_traj_vis;
     result.X_est_vis = X_est_vis;
     result.task_log = task_log_vis;
+    result.mc_sensor_traj = mc_sensor_traj;
 end

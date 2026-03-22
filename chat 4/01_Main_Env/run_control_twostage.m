@@ -1,11 +1,19 @@
-function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridMap, sim_cfg, ch4_cfg)
+function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridMap, sim_cfg, ch4_cfg, runtime_opt)
     % RUN_CONTROL_TWOSTAGE 第四章：基于任务分配的两阶段多传感器管控方法核心主循环
     
+    if nargin < 7 || isempty(runtime_opt)
+        runtime_opt = struct();
+    end
+    if ~isfield(runtime_opt, 'verbose') || isempty(runtime_opt.verbose)
+        runtime_opt.verbose = true;
+    end
+
     N_sensor = length(Sensor_distr);
+    Sensor_init = Sensor_distr;
     sensor_params = sim_cfg.sensor; 
     
     % --- 一些系统默认运行参数 ---
-    Ps = 1; Vx_thre = 200; Vy_thre = 200; Vz_thre = 200;
+    Ps = 0.99; Vx_thre = 200; Vy_thre = 200; Vz_thre = 200;
     match_threshold = sim_cfg.algo_baseline.match_threshold;
     control_interval = 5; % 动作更新间隔（每 5 个时刻决策一次）
     
@@ -22,12 +30,17 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     fixed_groups = ch4_cfg.fixed_search_target_groups;
     target_init = sim_cfg.target_init;
     oracle_cfg_A = ch4_cfg.oracle_cfg;
+    oracle_warmup_steps = 0;
+    if isfield(oracle_cfg_A, 'warmup_steps') && ~isempty(oracle_cfg_A.warmup_steps)
+        oracle_warmup_steps = max(0, round(oracle_cfg_A.warmup_steps));
+    end
     use_oracle_guidance = true;
     if isfield(ch4_cfg, 'enable_oracle_guidance') && ~isempty(ch4_cfg.enable_oracle_guidance)
         use_oracle_guidance = logical(ch4_cfg.enable_oracle_guidance);
     end
     default_heading = 0;
     prev_heading_deg = default_heading * ones(1, N_sensor);
+    prev_visible_flags = false(1, N_sensor);
     last_action_cmd = [];
     last_roles = repmat({'S'}, 1, N_sensor);
     last_opt_actions = [];
@@ -74,7 +87,7 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     %% === 核心时间步循环 (从 t=3 开始) ===
     for t = 3:N
         % 避免高频 console 输出影响性能（只在刷新窗口内显示）
-        if mod(t - 2, progress_refresh) == 0 || t == N
+        if runtime_opt.verbose && (mod(t - 2, progress_refresh) == 0 || t == N)
             disp(['--- 正在仿真 第 ', num2str(t), ' 步 ---']);
         end
         timing = tic;
@@ -89,7 +102,7 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
             % 2. 滤波
             [Sensor(i).state] = ALG3_PHD1time_3d_ukf_distr(Sensor(i).Z_dicaer_global{t-2,1},...
                 Sensor(i).Z_dicaer_global{t-1,1}, Sensor(i).Z_polar_part{t,1},...
-                Sensor(i).state, Sensor(i).Zr, Sensor(i).R_params, Ps, Sensor(i).Pd,...
+                Sensor(i).state, Sensor(i).Zr, Sensor(i).R_params, get_sensor_ps(Sensor(i), Ps), Sensor(i).Pd,...
                 Vx_thre, Vy_thre, Vz_thre,...
                 Sensor(i).location(1,1), Sensor(i).location(2,1), Sensor(i).location(3,1));   
 
@@ -120,11 +133,13 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
         %% ====== 【阶段 3+4：按开关选择策略】 ======
         % 方案A-Oracle: 视域内带噪真值跟踪 + 视域外固定组合搜索
         % 方案A-Paper : 第四章论文原始两阶段逻辑
-        if use_oracle_guidance
+        use_oracle_now = use_oracle_guidance && (t > oracle_warmup_steps);
+        if use_oracle_now
             if isempty(last_action_cmd) || mod(t - 3, control_interval) == 0
-                [action_cmd, current_roles, heading_deg] = build_oracle_guidance_actions( ...
-                    Sensor, Xreal_time_target{t,1}, target_init, fixed_groups, sensor_params, oracle_cfg_A, t, prev_heading_deg);
+                [action_cmd, current_roles, heading_deg, vis_flags] = build_oracle_guidance_actions( ...
+                    Sensor, Xreal_time_target{t,1}, target_init, fixed_groups, sensor_params, oracle_cfg_A, t, prev_heading_deg, prev_visible_flags);
                 prev_heading_deg = heading_deg;
+                prev_visible_flags = vis_flags;
                 last_action_cmd = action_cmd;
                 last_roles = current_roles;
             else
@@ -207,7 +222,7 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
             act_epsilon = 0;
             dt_sec = sensor_params.T;
             v_eff = sensor_params.v;
-            if use_oracle_guidance && strcmp(current_roles{i}, 'S') && isfield(oracle_cfg_A, 'search_speed_scale')
+            if use_oracle_now && strcmp(current_roles{i}, 'S') && isfield(oracle_cfg_A, 'search_speed_scale')
                 v_eff = sensor_params.v * oracle_cfg_A.search_speed_scale;
             end
             
@@ -227,7 +242,7 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
         
         % 更新剩余时间（低频刷新，避免刷屏）
         steps_done = t - 2;
-        if mod(steps_done, progress_refresh) == 0 || t == N
+        if runtime_opt.verbose && (mod(steps_done, progress_refresh) == 0 || t == N)
             avg_step = Time_total / steps_done;
             steps_left = (N - t); % 已完成 t 后，剩余决策步数
             eta_sec = avg_step * steps_left;
@@ -235,11 +250,13 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
                 steps_done, total_steps, avg_step, eta_sec, eta_sec/60);
         end
         
-        Xreal_t = Xreal_time_target{t,1};
-        Xreal_t(:, isnan(Xreal_t(1,:))) = []; % 剔除无效目标
-        OSPA(t) = ospa_dist(Xreal_t, X_est_global{t,1}, 120, 2);
-        Num_estimate(t) = size(X_est_global{t,1}, 2);
     end
+
+    % 固定 Oracle 轨迹后，重放 chat3 风格滤波链路计算真实估计 OSPA
+    eval_process_opt = struct('Ps', Ps, 'Vx_thre', Vx_thre, 'Vy_thre', Vy_thre, 'Vz_thre', Vz_thre);
+    eval_control_opt = struct('match_threshold', match_threshold, 'objective_mode', 'grid');
+    [OSPA, ~, Num_estimate, X_est_eval] = evaluate_ospa_on_fixed_traj( ...
+        Xreal_time_target, Sensor_init, Sensor_traj, N, GridMap, eval_process_opt, eval_control_opt);
     
     % --- 打包结果返回 ---
     result = struct();
@@ -249,6 +266,15 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     result.Time_avg = Time_total / (N - 2); 
     result.step_time_series = step_time_series;
     result.cum_time_series = cumsum(step_time_series);
-    result.X_est_vis = X_est_global;
+    result.X_est_vis = X_est_eval;
+    result.X_est_raw_vis = X_est_global;
     result.Sensor_traj_vis = Sensor_traj;
+end
+
+function Ps_i = get_sensor_ps(sensor_i, default_ps)
+if isfield(sensor_i, 'Ps') && ~isempty(sensor_i.Ps)
+    Ps_i = sensor_i.Ps;
+else
+    Ps_i = default_ps;
+end
 end

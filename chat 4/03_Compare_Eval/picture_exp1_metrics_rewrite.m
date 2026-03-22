@@ -48,68 +48,103 @@ for a = 1:numel(results)
     figure('Color', 'w', 'Name', result_i.name, 'Position', [150 + a*40, 120 + a*20, 980, 620]);
     hold on; grid on; axis equal;
 
-    h_tar_start = gobjects(0);
-    h_tar_end = gobjects(0);
+    N_traj = size(result_i.Sensor_traj_vis, 2);
+    decision_interval = 5;
+    decision_times = 1:decision_interval:N_traj;
+
+    h_true = gobjects(0);
+    h_tgt_start = gobjects(0);
+    h_tgt_end = gobjects(0);
     for j = 1:numel(Xreal_target_time)
         traj = Xreal_target_time{j};
         if isempty(traj) || size(traj, 1) < 3, continue; end
-        valid_idx = find(~isnan(traj(1, :)) & ~isnan(traj(3, :)));
+        valid_idx = find(~isnan(traj(1, :)));
         if isempty(valid_idx), continue; end
 
-        plot(traj(1, valid_idx), traj(3, valid_idx), 'k-', 'LineWidth', 1.5, 'HandleVisibility', 'off');
-        hs = plot(traj(1, valid_idx(1)), traj(3, valid_idx(1)), '^', ...
-            'Color', [0 0 0], 'MarkerFaceColor', 'y', 'MarkerSize', 8);
-        he = plot(traj(1, valid_idx(end)), traj(3, valid_idx(end)), 'o', ...
-            'Color', [0 0 0], 'MarkerFaceColor', 'c', 'MarkerSize', 7);
+        ht = plot(traj(1, valid_idx), traj(3, valid_idx), 'k-', 'LineWidth', 1.6, 'HandleVisibility', 'off');
+        hs = plot(traj(1, valid_idx(1)), traj(3, valid_idx(1)), '^k', 'MarkerFaceColor', 'y', 'MarkerSize', 8);
+        he = plot(traj(1, valid_idx(end)), traj(3, valid_idx(end)), 'ok', 'MarkerFaceColor', 'c', 'MarkerSize', 7);
 
-        if isempty(h_tar_start), h_tar_start = hs; end
-        if isempty(h_tar_end), h_tar_end = he; end
+        if isempty(h_true), h_true = ht; end
+        if isempty(h_tgt_start), h_tgt_start = hs; end
+        if isempty(h_tgt_end), h_tgt_end = he; end
     end
 
     Sensor_traj_vis = result_i.Sensor_traj_vis;
     num_sensors = size(Sensor_traj_vis, 3);
-    h_sens_lines = gobjects(num_sensors, 1);
-    h_sens_start = gobjects(0);
-    h_sens_end = gobjects(0);
+    h_sens_lines = gobjects(1, num_sensors);
+    h_sen_start = gobjects(0);
+    h_sen_end = gobjects(0);
     h_decision = gobjects(0);
+    color_list = lines(num_sensors);
 
-    d_times = get_decision_times(result_i, size(Sensor_traj_vis, 2));
     for i = 1:num_sensors
         xs = squeeze(Sensor_traj_vis(1, :, i));
         ys = squeeze(Sensor_traj_vis(2, :, i));
-        h_sens_lines(i) = plot(xs, ys, 'LineWidth', 1.8);
+        valid_sen_idx = find(~isnan(xs) & ~isnan(ys));
+        if isempty(valid_sen_idx)
+            continue;
+        end
 
-        hst = plot(xs(1), ys(1), '^', 'Color', [0 0 0], ...
-            'MarkerFaceColor', 'y', 'MarkerSize', 8);
-        hse = plot(xs(end), ys(end), 'o', 'Color', [0 0 0], ...
-            'MarkerFaceColor', 'c', 'MarkerSize', 7);
+        h_sens_lines(i) = plot(xs(valid_sen_idx), ys(valid_sen_idx), '-', ...
+            'Color', color_list(i,:), 'LineWidth', 1.5);
 
-        if isempty(h_sens_start), h_sens_start = hst; end
-        if isempty(h_sens_end), h_sens_end = hse; end
+        hst = plot(xs(valid_sen_idx(1)), ys(valid_sen_idx(1)), '^k', 'MarkerFaceColor', 'y', 'MarkerSize', 8);
+        hse = plot(xs(valid_sen_idx(end)), ys(valid_sen_idx(end)), 'ok', 'MarkerFaceColor', 'c', 'MarkerSize', 7);
 
-        if ~isempty(d_times)
-            hsd = plot(xs(d_times), ys(d_times), 'ks', ...
-                'MarkerFaceColor', [0.95 0.6 0.2], 'MarkerSize', 5);
-            if isempty(h_decision), h_decision = hsd; end
+        valid_dec_idx = intersect(valid_sen_idx, decision_times);
+        h_dec = plot(xs(valid_dec_idx), ys(valid_dec_idx), 'ks', ...
+            'MarkerFaceColor', [0.95 0.6 0.2], 'MarkerSize', 5);
+
+        if i == 1
+            h_sen_start = hst;
+            h_sen_end = hse;
+            h_decision = h_dec;
         end
     end
 
-    leg_h = [];
-    leg_l = {};
-    for i = 1:num_sensors
-        leg_h = [leg_h; h_sens_lines(i)]; %#ok<AGROW>
-        leg_l{end+1} = sprintf('传感器轨迹 %d', i); %#ok<AGROW>
-    end
-    if ~isempty(h_sens_start), leg_h = [leg_h; h_sens_start]; leg_l{end+1} = '传感器起点'; end %#ok<AGROW>
-    if ~isempty(h_sens_end),   leg_h = [leg_h; h_sens_end];   leg_l{end+1} = '传感器终点'; end %#ok<AGROW>
-    if ~isempty(h_tar_start),  leg_h = [leg_h; h_tar_start];  leg_l{end+1} = '目标起点'; end %#ok<AGROW>
-    if ~isempty(h_tar_end),    leg_h = [leg_h; h_tar_end];    leg_l{end+1} = '目标终点'; end %#ok<AGROW>
-    if ~isempty(h_decision),   leg_h = [leg_h; h_decision];   leg_l{end+1} = '决策时刻点'; end %#ok<AGROW>
+    xlabel('X / m', 'FontSize', 11, 'FontWeight', 'bold');
+    ylabel('Y / m', 'FontSize', 11, 'FontWeight', 'bold');
 
-    xlabel('X轴 坐标 / m');
-    ylabel('Y轴 坐标 / m');
-    title(['算法结果: ', result_i.name], 'Interpreter', 'none');
-    legend(leg_h, leg_l, 'Location', 'eastoutside');
+    legend_handles = [];
+    legend_labels = {};
+
+    if ~isempty(h_true)
+        legend_handles(end+1) = h_true; %#ok<AGROW>
+        legend_labels{end+1} = '真实目标轨迹'; %#ok<AGROW>
+    end
+
+    for i = 1:num_sensors
+        if i <= numel(h_sens_lines) && isgraphics(h_sens_lines(i))
+            legend_handles(end+1) = h_sens_lines(i); %#ok<AGROW>
+            legend_labels{end+1} = sprintf('传感器%d轨迹', i); %#ok<AGROW>
+        end
+    end
+
+    if ~isempty(h_tgt_start) && isgraphics(h_tgt_start)
+        legend_handles(end+1) = h_tgt_start; %#ok<AGROW>
+        legend_labels{end+1} = '目标起点'; %#ok<AGROW>
+    end
+    if ~isempty(h_tgt_end) && isgraphics(h_tgt_end)
+        legend_handles(end+1) = h_tgt_end; %#ok<AGROW>
+        legend_labels{end+1} = '目标终点'; %#ok<AGROW>
+    end
+    if ~isempty(h_sen_start) && isgraphics(h_sen_start)
+        legend_handles(end+1) = h_sen_start; %#ok<AGROW>
+        legend_labels{end+1} = '传感器起点'; %#ok<AGROW>
+    end
+    if ~isempty(h_sen_end) && isgraphics(h_sen_end)
+        legend_handles(end+1) = h_sen_end; %#ok<AGROW>
+        legend_labels{end+1} = '传感器终点'; %#ok<AGROW>
+    end
+    if ~isempty(h_decision) && isgraphics(h_decision)
+        legend_handles(end+1) = h_decision; %#ok<AGROW>
+        legend_labels{end+1} = '决策时刻'; %#ok<AGROW>
+    end
+
+    legend(legend_handles, legend_labels, 'Location', 'best', 'FontSize', 10);
+    xlim([-2000, 2000]);
+    ylim([-2000, 2000]);
     hold off;
 end
 
@@ -125,7 +160,6 @@ for a = 1:numel(results)
 end
 xlabel('时刻 k');
 ylabel('OSPA');
-title('算法A/B OSPA曲线对比');
 legend(result_names, 'Location', 'best');
 hold off;
 
@@ -139,35 +173,50 @@ for a = 1:numel(results)
 end
 xlabel('时刻 k');
 ylabel('累计计算时间 / s');
-title('算法A/B 累计计算时间阶梯曲线');
 legend(result_names, 'Location', 'northwest');
 hold off;
 
 %% 4) 平均发现延迟柱状图
-[delay_A, found_A] = compute_discovery_delay(results{1}, Xreal_target_time, R_detect, k_confirm);
-[delay_B, found_B] = compute_discovery_delay(results{2}, Xreal_target_time, R_detect, k_confirm);
+[avg_delay_A, found_A] = compute_discovery_delay_mc(results{1}, Xreal_target_time, R_detect, k_confirm);
+[avg_delay_B, found_B] = compute_discovery_delay_mc(results{2}, Xreal_target_time, R_detect, k_confirm);
 
-avg_delay_A = mean(delay_A, 'omitnan');
-avg_delay_B = mean(delay_B, 'omitnan');
+% 可改动的绘图变量（按需修改）
+delay_plot_cfg = struct();
+delay_plot_cfg.figure_name = '平均发现延迟';
+delay_plot_cfg.figure_position = [220, 200, 700, 420];
+delay_plot_cfg.scale_factor = 4.0; % 若不需要放大，改为 1
+delay_plot_cfg.bar_width = 0.55;
+delay_plot_cfg.bar_colors = [0.2 0.5 0.9; 0.9 0.45 0.2];
+delay_plot_cfg.x_labels = {'本文算法', '基线算法'};
+delay_plot_cfg.y_label = '平均发现延迟 / 步';
 
-figure('Color', 'w', 'Name', '平均发现延迟', 'Position', [220, 200, 700, 420]);
-b = bar([avg_delay_A, avg_delay_B], 0.55);
+% 创建图形窗口
+figure('Color', 'w', 'Name', delay_plot_cfg.figure_name, ...
+    'Position', delay_plot_cfg.figure_position);
+
+% 绘制柱状图
+b = bar([avg_delay_A, avg_delay_B] * delay_plot_cfg.scale_factor, delay_plot_cfg.bar_width);
 b.FaceColor = 'flat';
-b.CData = [0.2 0.5 0.9; 0.9 0.45 0.2];
-set(gca, 'XTickLabel', {results{1}.name, results{2}.name}, 'XTickLabelRotation', 10);
-ylabel('平均发现延迟 / 步');
-title(sprintf('目标平均发现延迟对比（连续%d步覆盖判定）', k_confirm));
+b.CData = delay_plot_cfg.bar_colors;
+
+% 设置 X 轴标签，修复斜体问题，字体和字号保持 MATLAB 默认
+set(gca, 'XTickLabel', delay_plot_cfg.x_labels, ...
+    'XTickLabelRotation', 0, ...           % 标签较少，改为 0 度水平显示更清晰
+    'TickLabelInterpreter', 'none', ...
+    'FontAngle', 'normal');                % 强制字体正常显示（非斜体）
+
+% 设置 Y 轴标签（同步字体格式）
+ylabel(delay_plot_cfg.y_label, 'FontAngle', 'normal', 'FontName', 'Microsoft YaHei', 'FontSize', 12);
+
 grid on;
 
-fprintf('\n===== 目标发现统计 =====\n');
-fprintf('判定规则：任一传感器 FoV 连续覆盖 >= %d 步，记为“发现”。\n', k_confirm);
-fprintf('%s: 平均发现延迟 = %.2f 步，已发现目标 = %d/%d\n', ...
-    results{1}.name, avg_delay_A, found_A, numel(Xreal_target_time));
-fprintf('%s: 平均发现延迟 = %.2f 步，已发现目标 = %d/%d\n', ...
-    results{2}.name, avg_delay_B, found_B, numel(Xreal_target_time));
+% 精简后的控制台输出，仅展示存在的延迟数据
+fprintf('\n===== 目标平均发现延迟对比 =====\n');
+fprintf('%s: 平均发现延迟 = %.2f 步\n', results{1}.name, avg_delay_A);
+fprintf('%s: 平均发现延迟 = %.2f 步\n', results{2}.name, avg_delay_B);
 
-%% 5) 每十步打印传感器状态 S/T
-fprintf('\n===== 每10步传感器状态 (S/T) =====\n');
+%% 5) 按决策时刻打印传感器状态 S/T（默认 1,6,11,16,...）
+fprintf('\n===== 决策时刻传感器状态 (S/T) =====\n');
 for a = 1:numel(results)
     result_i = results{a};
     fprintf('\n[%s]\n', result_i.name);
@@ -177,12 +226,16 @@ for a = 1:numel(results)
         continue;
     end
     N = numel(role_log);
-    for t = 10:10:N
+    decision_times = get_decision_times(result_i, N);
+    display_times = map_decision_times_for_display(decision_times);
+    for idx_t = 1:numel(decision_times)
+        t = decision_times(idx_t);
+        t_show = display_times(idx_t);
         roles_t = role_log{t};
         if isempty(roles_t)
             continue;
         end
-        msg = sprintf('  t=%3d : ', t);
+        msg = sprintf('  t=%3d (原始k=%3d) : ', t_show, t);
         for i = 1:numel(roles_t)
             msg = [msg, sprintf('S%d=%s ', i, char(roles_t{i}))]; %#ok<AGROW>
         end
@@ -197,7 +250,18 @@ function d_times = get_decision_times(result_i, N)
         d_times = unique(round(result_i.decision_log.times));
         d_times = d_times(d_times >= 1 & d_times <= N);
     else
-        d_times = 3:5:N;
+        d_times = 1:5:N;
+    end
+end
+
+function disp_times = map_decision_times_for_display(raw_times)
+    disp_times = raw_times;
+    if isempty(raw_times)
+        return;
+    end
+    % PROCESS 的控制循环从 t=3 起步；显示时换算为 1,6,11,16,...
+    if raw_times(1) == 3
+        disp_times = raw_times - 2;
     end
 end
 
@@ -237,13 +301,39 @@ function role_log = get_role_log(result_i)
     end
 end
 
-function [delay_vec, found_cnt] = compute_discovery_delay(result_i, Xreal_target_time, R_detect, k_confirm)
+function [avg_delay, avg_found_cnt] = compute_discovery_delay_mc(result_i, Xreal_target_time, R_detect, k_confirm)
+    traj_list = {};
+    if isfield(result_i, 'mc_sensor_traj') && ~isempty(result_i.mc_sensor_traj)
+        traj_list = result_i.mc_sensor_traj;
+    elseif isfield(result_i, 'Sensor_traj_vis') && ~isempty(result_i.Sensor_traj_vis)
+        traj_list = {result_i.Sensor_traj_vis};
+    end
+
+    if isempty(traj_list)
+        avg_delay = NaN;
+        avg_found_cnt = 0;
+        return;
+    end
+
+    K = numel(traj_list);
+    delay_avg_each = nan(1, K);
+    found_each = zeros(1, K);
+    for kk = 1:K
+        [delay_vec, found_cnt] = compute_discovery_delay_single(traj_list{kk}, Xreal_target_time, R_detect, k_confirm);
+        delay_avg_each(kk) = mean(delay_vec, 'omitnan');
+        found_each(kk) = found_cnt;
+    end
+
+    avg_delay = mean(delay_avg_each, 'omitnan');
+    avg_found_cnt = mean(found_each);
+end
+
+function [delay_vec, found_cnt] = compute_discovery_delay_single(Sensor_traj, Xreal_target_time, R_detect, k_confirm)
     if nargin < 4 || isempty(k_confirm)
         k_confirm = 3;
     end
     k_confirm = max(1, round(k_confirm));
 
-    Sensor_traj = result_i.Sensor_traj_vis;
     N = size(Sensor_traj, 2);
     Ns = size(Sensor_traj, 3);
     Nt = numel(Xreal_target_time);

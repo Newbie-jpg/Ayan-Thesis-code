@@ -1,5 +1,5 @@
-function [action, sensor_roles, heading_deg] = build_oracle_guidance_actions( ...
-    Sensor, Xreal_t, target_init, fixed_groups, sensor_params, oracle_cfg, t, prev_heading_deg)
+function [action, sensor_roles, heading_deg, visible_flags] = build_oracle_guidance_actions( ...
+    Sensor, Xreal_t, target_init, fixed_groups, sensor_params, oracle_cfg, t, prev_heading_deg, prev_visible_flags)
 % BUILD_ORACLE_GUIDANCE_ACTIONS
 % 统一生成“视域内带噪真值跟踪 + 视域外固定搜索/出生引导”的动作。
 
@@ -7,9 +7,13 @@ function [action, sensor_roles, heading_deg] = build_oracle_guidance_actions( ..
     action = zeros(2, N_sensor);
     sensor_roles = repmat({'S'}, 1, N_sensor);
     heading_deg = zeros(1, N_sensor);
+    visible_flags = false(1, N_sensor);
 
     if nargin < 8 || isempty(prev_heading_deg)
         prev_heading_deg = nan(1, N_sensor);
+    end
+    if nargin < 9 || isempty(prev_visible_flags)
+        prev_visible_flags = false(1, N_sensor);
     end
     if nargin < 7 || isempty(t)
         t = 0;
@@ -79,23 +83,38 @@ function [action, sensor_roles, heading_deg] = build_oracle_guidance_actions( ..
         if ~isempty(visible_assigned)
             sensor_roles{i} = 'T';
             waypoint = nearest_assigned_point(loc_i, visible_assigned, active_ids, noisy_pts, Xreal_t);
+            visible_flags(i) = true;
         elseif ~isempty(visible_all)
             sensor_roles{i} = 'T';
             waypoint = nearest_assigned_point(loc_i, visible_all, active_ids, noisy_pts, Xreal_t);
+            visible_flags(i) = true;
         else
             sensor_roles{i} = 'S';
-            tid = choose_birth_anchor_target(assigned, target_init, t);
-            if ~isempty(tid) && tid >= 1 && tid <= size(target_init, 2)
-                waypoint = target_init([1, 3, 5], tid);
+            born_assigned = intersect(assigned, active_ids);
+            if ~isempty(born_assigned)
+                % 目标已出生但暂未进入 FoV：朝其当前（带噪）位置搜索，而非回出生点打转
+                waypoint = nearest_assigned_point(loc_i, born_assigned, active_ids, noisy_pts, Xreal_t);
             else
-                waypoint = loc_i;
+                % 仅当目标尚未出生时，才朝出生点方向推进
+                tid = choose_birth_anchor_target(assigned, target_init, t);
+                if ~isempty(tid) && tid >= 1 && tid <= size(target_init, 2)
+                    waypoint = target_init([1, 3, 5], tid);
+                else
+                    waypoint = loc_i;
+                end
             end
         end
 
         idx = waypoint_to_heading_action(loc_i, waypoint, sensor_params);
         heading_i = sensor_params.C(idx);
 
-        if isfinite(max_turn_deg) && i <= numel(prev_heading_deg) && ~isnan(prev_heading_deg(i))
+        % 首次捕获豁免：上一时刻看不到、当前时刻看得到，则本步允许直接转向目标
+        is_first_capture = false;
+        if i <= numel(prev_visible_flags)
+            is_first_capture = (~prev_visible_flags(i)) && visible_flags(i);
+        end
+
+        if (~is_first_capture) && isfinite(max_turn_deg) && i <= numel(prev_heading_deg) && ~isnan(prev_heading_deg(i))
             d = wrap180_local(heading_i - prev_heading_deg(i));
             d = min(max(d, -max_turn_deg), max_turn_deg);
             heading_i = prev_heading_deg(i) + d;
@@ -131,6 +150,21 @@ function tid = choose_birth_anchor_target(assigned, target_init, t)
         return;
     end
 
+    % 优先选择“尚未出生”的目标作为出生引导锚点
+    for k = 1:numel(assigned)
+        j = assigned(k);
+        if j > size(target_init, 2)
+            continue;
+        end
+        begin_time = target_init(7, j);
+        end_time = target_init(8, j);
+        if t < begin_time && t <= end_time
+            tid = j;
+            return;
+        end
+    end
+
+    % 次选：仍在存活窗口内的目标（用于无更优信息时的保守引导）
     for k = 1:numel(assigned)
         j = assigned(k);
         if j > size(target_init, 2)
@@ -142,7 +176,8 @@ function tid = choose_birth_anchor_target(assigned, target_init, t)
             return;
         end
     end
-    tid = assigned(1);
+    % 若均已死亡，则不再强制拉回出生点，避免原地打转
+    tid = [];
 end
 
 function wp = nearest_assigned_point(loc_i, ids, active_ids, noisy_pts, Xreal_t)

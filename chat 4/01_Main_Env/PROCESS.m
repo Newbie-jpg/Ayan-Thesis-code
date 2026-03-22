@@ -28,13 +28,15 @@ end
 if nargin < 10 || isempty(parallel_opt)
     parallel_opt = struct();
 end
+Sensor_init = Sensor;
 
 process_opt = set_default_fields(process_opt, struct( ...
-    'Ps', 1, ...
+    'Ps', 0.99, ...
     'Vx_thre', 200, ...
     'Vy_thre', 200, ...
     'Vz_thre', 200, ...
-    'control_interval', 5));
+    'control_interval', 5, ...
+    'verbose', true));
 parallel_opt = set_default_fields(parallel_opt, struct( ...
     'process_inner_pool_max', 8));
 control_opt = set_default_fields(control_opt, struct( ...
@@ -71,12 +73,8 @@ for i = 1:N_sensor
 end
 
 %===预处理===
-% 如果检测概率很高，内部当成1来进行滤波
-for i = 1:N_sensor
-    if Sensor(i).Pd >= 0.99
-        Sensor(i).Pd = 1;
-    end
-end
+% 保持传感器配置中的检测概率 Pd，不做 Pd=1 的硬化。
+% 对应 chapter2 理论：更新项需保留 (1-p_D) 未检测分量。
 
 %======PHD最初估计值初始化======
 ALG3_PHD_initial;
@@ -110,8 +108,14 @@ Time=0;
 control_interval = process_opt.control_interval;  % 每隔 control_interval 个时刻更新一次控制动作
 last_action = [];      % 缓存上一次控制动作
 prev_heading_deg = zeros(1, N_sensor);
+prev_visible_flags = false(1, N_sensor);
 current_roles = repmat({'S'}, 1, N_sensor);
 last_roles = current_roles;
+oracle_warmup_steps = 0;
+if isfield(control_opt, 'oracle_cfg') && isstruct(control_opt.oracle_cfg) && ...
+        isfield(control_opt.oracle_cfg, 'warmup_steps') && ~isempty(control_opt.oracle_cfg.warmup_steps)
+    oracle_warmup_steps = max(0, round(control_opt.oracle_cfg.warmup_steps));
+end
 decision_log = struct('times', [], 'track_cost', [], 'search_gain', [], ...
     'cs_gain', [], 'info_gain', [], 'total_cost', [], 'selection', [], ...
     'objective_mode', '', 'step_time_series', zeros(1, N), 'role_log', []);
@@ -138,7 +142,7 @@ for t = 3:N
         % 3. 执行滤波（内部对高斯分量做 parfor，充分利用多核）
         [Sensor(i).state] = ALG3_PHD1time_3d_ukf_distr(Sensor(i).Z_dicaer_global{t-2,1},...
             Sensor(i).Z_dicaer_global{t-1,1}, Sensor(i).Z_polar_part{t,1},...
-            Sensor(i).state, Sensor(i).Zr, Sensor(i).R_params, Ps, Sensor(i).Pd,...
+            Sensor(i).state, Sensor(i).Zr, Sensor(i).R_params, get_sensor_ps(Sensor(i), Ps), Sensor(i).Pd,...
             Vx_thre, Vy_thre, Vz_thre,...
             Sensor(i).location(1,1), Sensor(i).location(2,1), Sensor(i).location(3,1));   
 
@@ -183,12 +187,14 @@ for t = 3:N
     end
 
     %=== 核心控制：每隔固定时刻更新一次动作，其余时刻沿用上一时刻动作 ===
-    if control_opt.enable_oracle_tracking
+    oracle_active = control_opt.enable_oracle_tracking && (t > oracle_warmup_steps);
+    if oracle_active
         if isempty(last_action) || mod(t - 3, control_interval) == 0
-            [action, current_roles, heading_deg] = build_oracle_guidance_actions( ...
+            [action, current_roles, heading_deg, vis_flags] = build_oracle_guidance_actions( ...
                 Sensor, Xreal_time_target{t,1}, control_opt.target_init, ...
-                control_opt.fixed_search_target_groups, sensor, control_opt.oracle_cfg, t, prev_heading_deg);
+                control_opt.fixed_search_target_groups, sensor, control_opt.oracle_cfg, t, prev_heading_deg, prev_visible_flags);
             prev_heading_deg = heading_deg;
+            prev_visible_flags = vis_flags;
             last_action = action;
             last_roles = current_roles;
 
@@ -231,7 +237,7 @@ for t = 3:N
         dt_sec = sensor.T; 
         
         v_eff = sensor.v;
-        if control_opt.enable_oracle_tracking && strcmp(current_roles{i}, 'S') && ...
+        if oracle_active && strcmp(current_roles{i}, 'S') && ...
                 isfield(control_opt.oracle_cfg, 'search_speed_scale')
             v_eff = sensor.v * control_opt.oracle_cfg.search_speed_scale;
         end
@@ -257,7 +263,7 @@ for t = 3:N
     decision_log.step_time_series(t) = dt_total;
     decision_log.role_log{t} = current_roles;
     steps_done = t - 2;
-    if m == 1 && isempty(getCurrentTask()) && (mod(steps_done, progress_refresh) == 0 || t == N)
+    if process_opt.verbose && m == 1 && isempty(getCurrentTask()) && (mod(steps_done, progress_refresh) == 0 || t == N)
         avg_step = display_time_total / steps_done;
         steps_left = total_steps - steps_done;
         eta_sec = avg_step * steps_left;
@@ -266,32 +272,19 @@ for t = 3:N
     end
   
 end
+
+function Ps_i = get_sensor_ps(sensor_i, default_ps)
+if isfield(sensor_i, 'Ps') && ~isempty(sensor_i.Ps)
+    Ps_i = sensor_i.Ps;
+else
+    Ps_i = default_ps;
+end
+end
 Time = Time / ( N - 2 ); % 单个融合周期时间计算
 
-%===分布式 OSPA 计算===
-OSPA = zeros(1,N);
-OSPA(1:2) = 0;
-OSPA_sensor = zeros(N_sensor, N);  % 各传感器局部估计的 OSPA
-OSPA_sensor(:, 1:2) = 0;
-for t=3:N
-    Xreal_t = Xreal_time_target{t,1};
-    Xreal_t(:, isnan(Xreal_t(1,:))) = [];
-
-    % 全局 OSPA：直接使用融合中心结果提取出的全局估计
-    X_est_global_t = X_est_global{t,1};
-    OSPA(t) = ospa_dist(Xreal_t, X_est_global_t, 120, 2);
-
-    for i = 1:N_sensor
-        OSPA_sensor(i, t) = ospa_dist(Xreal_t, Sensor(i).X_est_fov{t,1}, 120, 2);
-    end
-end
-
-%===分布式数量计算===
-Num_estimate = zeros(1,N);
-for t=1:N
-    Num_estimate(t) = size(X_est_global{t,1},2);
-end
-X_est_series = Sensor(1).X_est;
+%===分布式 OSPA 评估（固定轨迹重放滤波，解耦控制与评估）===
+[OSPA, OSPA_sensor, Num_estimate, X_est_series] = evaluate_ospa_on_fixed_traj( ...
+    Xreal_time_target, Sensor_init, Sensor_traj, N, GridMap, process_opt, control_opt);
 
 %{
 % =======计算每个时刻真实目标数目=======

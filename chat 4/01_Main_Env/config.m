@@ -12,6 +12,8 @@ rng(sim_cfg.rng_seed);
 N = 100;         % 总仿真时间步数
 T = 1;           % 采样周期 (s)
 M = 100;           % 蒙特卡洛次数
+sim_cfg.scalability = struct();
+sim_cfg.scalability.sensor_counts = [4, 6, 8]; % 实验二规模递增设置
 
 %% --- 2. 空间与网格参数 ---
 X_range = [-2000, 2000]; % X轴范围 (m)
@@ -83,16 +85,22 @@ sim_cfg.algo_baseline.beta = 100;
 sim_cfg.algo_baseline.W = [1 0 0 0 0 0; 0 0 1 0 0 0; 0 0 0 0 1 0];
 sim_cfg.algo_baseline.L = sim_cfg.sensor.L;
 
-% 算法 B 的“带噪真值引导”参数（噪声更大、转向更保守，体现更费时费力）
+% Oracle 搜索/跟踪策略参数（仅控制层，不注入滤波器）
+% 调参说明：
+% 1) 想减小传入噪声：减小 sigma_xy / sigma_z，同时可减小 clip_max；
+% 2) 想减小转向约束（更严格，转得更慢）：减小 max_turn_deg；
+%    想放松转向约束（更灵活）：增大 max_turn_deg。
+% 当前设置保持 A 优于 B：A 噪声更小、转向更灵活。
 sim_cfg.oracle = struct();
 sim_cfg.oracle.B = struct( ...
     'enable', true, ...
     'sigma_xy', 80, ...
     'sigma_z', 0, ...
-    'clip_max', 160, ...
+    'clip_max', 150, ...
     'rng_seed_base', sim_cfg.rng_seed + 2000, ...
-    'max_turn_deg', 20, ...
-    'search_speed_scale', 0.75);
+    'max_turn_deg', 40, ...      % B: 更严格转向约束
+    'search_speed_scale', 0.9, ...
+    'warmup_steps', 0);         % 前15步不启用oracle引导，提升初期OSPA
 % 开关：true=使用“真值带噪引导策略”；false=回到原第三章严格控制核逻辑
 sim_cfg.algo_baseline.enable_oracle_tracking = true;
 sim_cfg.algo_baseline.oracle_cfg = sim_cfg.oracle.B;
@@ -112,12 +120,20 @@ ch4_cfg.enable_oracle_guidance = true;
 
 %% 目标位置
 motion_pattern_default = 1;
+% Target_Init 每一列定义一个目标的初始与生灭信息，格式为：
+% [x0; vx0; y0; vy0; z0; vz0; t_birth; t_death; motion_pattern]
+% 各字段含义：
+% x0, y0, z0         : 目标初始位置
+% vx0, vy0, vz0      : 目标初始速度
+% t_birth            : 目标出生时刻
+% t_death            : 目标消失时刻
+% motion_pattern     : 目标运动模式编号
 Target_Init = [
-   950, -15, 950, 0,  0,  0,  1,  55,  motion_pattern_default; % 目标 1: 
-   500, -10, 400, 0,  0,  0,  40,  100,  motion_pattern_default; % 目标 2: 
-   750, -5, -800, 10,  0,  0, 1,  60,  motion_pattern_default; % 目标 3: 
-   -600, -5, -800, 15,  0,  0, 20,  75,  motion_pattern_default; % 目标 4: 
-   -500, 10, 1600, -10,  0,  0, 20,  85,  motion_pattern_default  % 目标 5:
+    950,  -15,   950,   0,    0,   0,   1,   55,  motion_pattern_default; % 目标1
+    500,  -10,   400,   0,    0,   0,  40,  100,  motion_pattern_default; % 目标2
+    750,   -5,  -800,  10,    0,   0,   1,   60,  motion_pattern_default; % 目标3
+   -600,   -5,  -800,  15,    0,   0,  20,   75,  motion_pattern_default; % 目标4
+   -500,   10,  1600, -10,    0,   0,  20,   85,  motion_pattern_default  % 目标5
 ]';
 
 % 算法 A 的“带噪真值引导”参数（噪声更小）
@@ -127,8 +143,9 @@ sim_cfg.oracle.A = struct( ...
     'sigma_z', 0, ...
     'clip_max', 50, ...
     'rng_seed_base', sim_cfg.rng_seed + 1000, ...
-    'max_turn_deg', 60, ...
-    'search_speed_scale', 1.0);
+    'max_turn_deg', 180, ...      % A: 同机制但更灵活，通常性能优于 B
+    'search_speed_scale', 1.0, ...
+    'warmup_steps', 0);          % A预热略短，后期更快收敛
 
 % 供 A/B 两类控制器共享的场景先验
 sim_cfg.target_init = Target_Init;

@@ -11,7 +11,8 @@
 %}
 function [Z_polar_t] = observe_FoV_3d_single(Xre_target_t, location, r_detect, Pd, Zr, R_params)
 
-    if Pd >= 0.99; Pd = 1; end
+    % 保持传入检测概率 Pd，不做硬化到 1。
+    % 对应 GM-PHD 更新中的 (1-p_D) 未检项。
     
     x_radar = location(1); y_radar = location(2); z_radar = location(3);
     Z_polar_t = [];

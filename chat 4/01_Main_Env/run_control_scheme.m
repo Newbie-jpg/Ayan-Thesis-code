@@ -21,32 +21,39 @@ function result = run_control_scheme(algo_cfg, Xreal_time_target, Sensor_distr, 
     Time_total = 0;
     Sensor_traj_vis = [];
     X_est_vis = [];
+    mc_sensor_traj = cell(M, 1);
     decision_log_vis = struct('times', [], 'track_cost', [], 'search_gain', [], ...
         'cs_gain', [], 'info_gain', [], 'total_cost', [], 'selection', [], ...
         'objective_mode', '');
 
     if M > 1
+        disp(['方案 ', algo_cfg.name, ' 并行蒙特卡洛运行中，总次数 M=', num2str(M), ' ...']);
         traj_store = cell(M, 1);
         log_store = cell(M, 1);
         parfor m = 1:M
-            disp(['正在运行方案 ', algo_cfg.name, ' 的第 ', num2str(m), ' 次蒙特卡洛仿真...']);
+            process_opt_run = process_opt;
+            process_opt_run.verbose = false;
             [OSPA, OSPA_sensor, Num_estimate, Time, Sensor_traj, X_est_series, decision_log] = ...
-                PROCESS(m, Xreal_time_target, Sensor_distr, N, GridMap, selection, sensor, algo_cfg.control_opt, process_opt, parallel_opt);
+                PROCESS(m, Xreal_time_target, Sensor_distr, N, GridMap, selection, sensor, algo_cfg.control_opt, process_opt_run, parallel_opt);
             OSPA_total = OSPA_total + OSPA;
             OSPA_total_sensor = OSPA_total_sensor + OSPA_sensor;
             Num_total = Num_total + Num_estimate;
             Time_total = Time_total + Time;
             traj_store{m} = {Sensor_traj, X_est_series};
+            mc_sensor_traj{m} = Sensor_traj;
             log_store{m} = decision_log;
         end
+        disp(['方案 ', algo_cfg.name, ' 并行蒙特卡洛运行完成。']);
         Sensor_traj_vis = traj_store{1}{1};
         X_est_vis = traj_store{1}{2};
         decision_log_vis = log_store{1};
     else
         for m = 1:M
             disp(['正在运行方案 ', algo_cfg.name, ' 的第 ', num2str(m), ' 次蒙特卡洛仿真...']);
+            process_opt_run = process_opt;
+            process_opt_run.verbose = true;
             [OSPA, OSPA_sensor, Num_estimate, Time, Sensor_traj, X_est_series, decision_log] = ...
-                PROCESS(m, Xreal_time_target, Sensor_distr, N, GridMap, selection, sensor, algo_cfg.control_opt, process_opt, parallel_opt);
+                PROCESS(m, Xreal_time_target, Sensor_distr, N, GridMap, selection, sensor, algo_cfg.control_opt, process_opt_run, parallel_opt);
             OSPA_total = OSPA_total + OSPA;
             OSPA_total_sensor = OSPA_total_sensor + OSPA_sensor;
             Num_total = Num_total + Num_estimate;
@@ -56,6 +63,7 @@ function result = run_control_scheme(algo_cfg, Xreal_time_target, Sensor_distr, 
                 X_est_vis = X_est_series;
                 decision_log_vis = decision_log;
             end
+            mc_sensor_traj{m} = Sensor_traj;
         end
     end
 
@@ -70,4 +78,5 @@ function result = run_control_scheme(algo_cfg, Xreal_time_target, Sensor_distr, 
     result.Sensor_traj_vis = Sensor_traj_vis;
     result.X_est_vis = X_est_vis;
     result.decision_log = decision_log_vis;
+    result.mc_sensor_traj = mc_sensor_traj;
 end

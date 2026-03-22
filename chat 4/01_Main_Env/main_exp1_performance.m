@@ -54,7 +54,7 @@ tic_B = tic;
 % 注: M(蒙特卡洛次数) 已在 config.m 中定义，此处直接传入
 result_B = run_control_scheme(algo_cfg_B, Xreal_time_target, Sensor_distr_B, ...
     N, GridMap, selection, sim_cfg.sensor, M, sim_cfg.rng_seed, ...
-    struct('Ps', 1, 'control_interval', 5), struct('min_pool_size', 1));
+    struct('Ps', Sensor_distr_B(1).Ps, 'control_interval', 5), struct('min_pool_size', 1));
 time_B = toc(tic_B);
 
 result_B.name = '基线算法：第三章联合加权优化';
