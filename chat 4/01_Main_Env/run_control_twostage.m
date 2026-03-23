@@ -11,9 +11,13 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     N_sensor = length(Sensor_distr);
     Sensor_init = Sensor_distr;
     sensor_params = sim_cfg.sensor; 
+    skip_online_filter = false;
+    if isfield(sim_cfg, 'skip_online_filter') && ~isempty(sim_cfg.skip_online_filter)
+        skip_online_filter = logical(sim_cfg.skip_online_filter);
+    end
     
     % --- 一些系统默认运行参数 ---
-    Ps = 0.99; Vx_thre = 200; Vy_thre = 200; Vz_thre = 200;
+    Ps = 1; Vx_thre = 200; Vy_thre = 200; Vz_thre = 200;
     match_threshold = sim_cfg.algo_baseline.match_threshold;
     control_interval = 5; % 动作更新间隔（每 5 个时刻决策一次）
     
@@ -64,6 +68,98 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     end
     
     % === 预处理与 t=1, t=2 时刻的初始化 (直接复用 PROCESS.m 逻辑) ===
+    if skip_online_filter
+        if ~use_oracle_guidance
+            error(['run_control_twostage:SkipOnlineFilterRequiresOracle', newline, ...
+                '当前已设置 sim_cfg.skip_online_filter=true（在线仅生成轨迹），', ...
+                '但 ch4_cfg.enable_oracle_guidance=false。', newline, ...
+                '该配置下在线阶段无法调用依赖融合结果的两阶段论文控制核。']);
+        end
+
+        for i = 1:N_sensor
+            Sensor_traj(:,1,i) = Sensor(i).location(:);
+            if N >= 2
+                Sensor_traj(:,2,i) = Sensor(i).location(:);
+            end
+        end
+        X_est_global{1,1} = zeros(6,0);
+        X_est_global{2,1} = zeros(6,0);
+        task_log{1} = {Sensor.task_type};
+        task_log{2} = {Sensor.task_type};
+
+        for t = 3:N
+            if runtime_opt.verbose && (mod(t - 2, progress_refresh) == 0 || t == N)
+                disp(['--- 正在仿真 第 ', num2str(t), ' 步 ---']);
+            end
+            timing = tic;
+
+            if isempty(last_action_cmd) || mod(t - 3, control_interval) == 0
+                [action_cmd, current_roles, heading_deg, vis_flags] = build_oracle_guidance_actions( ...
+                    Sensor, Xreal_time_target{t,1}, target_init, fixed_groups, sensor_params, oracle_cfg_A, t, prev_heading_deg, prev_visible_flags);
+                prev_heading_deg = heading_deg;
+                prev_visible_flags = vis_flags;
+                last_action_cmd = action_cmd;
+                last_roles = current_roles;
+            else
+                action_cmd = last_action_cmd;
+                current_roles = last_roles;
+            end
+            task_log{t} = current_roles;
+
+            for i = 1 : N_sensor
+                act_beta = action_cmd(1, i);
+                act_epsilon = 0;
+                dt_sec = sensor_params.T;
+                v_eff = sensor_params.v;
+                if strcmp(current_roles{i}, 'S') && isfield(oracle_cfg_A, 'search_speed_scale')
+                    v_eff = sensor_params.v * oracle_cfg_A.search_speed_scale;
+                end
+                dx = v_eff * cos(deg2rad(act_epsilon)) * cos(deg2rad(act_beta)) * dt_sec;
+                dy = v_eff * cos(deg2rad(act_epsilon)) * sin(deg2rad(act_beta)) * dt_sec;
+                dz = v_eff * sin(deg2rad(act_epsilon)) * dt_sec;
+                Sensor(i).location = Sensor(i).location + [dx; dy; dz];
+                Sensor_traj(:, t, i) = Sensor(i).location(:);
+                Sensor(i).task_type = current_roles{i};
+            end
+
+            dt_step = toc(timing);
+            Time_total = Time_total + dt_step;
+            step_time_series(t) = dt_step;
+
+            steps_done = t - 2;
+            if runtime_opt.verbose && (mod(steps_done, progress_refresh) == 0 || t == N)
+                avg_step = Time_total / steps_done;
+                steps_left = (N - t);
+                eta_sec = avg_step * steps_left;
+                fprintf('>>> 算法A进度：%d/%d 步，单步均耗时 %.2f s，预计剩余 %.1f s (%.1f min)\n', ...
+                    steps_done, total_steps, avg_step, eta_sec, eta_sec/60);
+            end
+        end
+
+        eval_process_opt = struct('Ps', Ps, 'Vx_thre', Vx_thre, 'Vy_thre', Vy_thre, 'Vz_thre', Vz_thre);
+        eval_control_opt = struct('match_threshold', match_threshold, 'objective_mode', 'grid');
+        [OSPA, ~, Num_estimate, X_est_eval] = evaluate_ospa_on_fixed_traj( ...
+            Xreal_time_target, Sensor_init, Sensor_traj, N, GridMap, eval_process_opt, eval_control_opt);
+
+        result = struct();
+        result.task_log = task_log;
+        result.OSPA_avg = OSPA;
+        result.Num_avg = Num_estimate;
+        result.Time_avg = Time_total / (N - 2);
+        result.step_time_series = step_time_series;
+        result.cum_time_series = cumsum(step_time_series);
+        result.X_est_vis = X_est_eval;
+        result.X_est_raw_vis = X_est_global;
+        result.Sensor_traj_vis = Sensor_traj;
+        return;
+    end
+
+    % 与 chat3 一致：若检测概率很高，内部当成 1 来进行滤波
+    for i = 1:N_sensor
+        if Sensor(i).Pd >= 0.99
+            Sensor(i).Pd = 1;
+        end
+    end
     ALG3_PHD_initial; 
     for i = 1:N_sensor
         Z_p1 = observe_FoV_3d_single(Xreal_time_target{1,1}, Sensor(i).location, Sensor(i).R_detect, Sensor(i).Pd, Sensor(i).Zr, Sensor(i).R_params);
@@ -102,7 +198,7 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
             % 2. 滤波
             [Sensor(i).state] = ALG3_PHD1time_3d_ukf_distr(Sensor(i).Z_dicaer_global{t-2,1},...
                 Sensor(i).Z_dicaer_global{t-1,1}, Sensor(i).Z_polar_part{t,1},...
-                Sensor(i).state, Sensor(i).Zr, Sensor(i).R_params, get_sensor_ps(Sensor(i), Ps), Sensor(i).Pd,...
+                Sensor(i).state, Sensor(i).Zr, Sensor(i).R_params, Ps, Sensor(i).Pd,...
                 Vx_thre, Vy_thre, Vz_thre,...
                 Sensor(i).location(1,1), Sensor(i).location(2,1), Sensor(i).location(3,1));   
 
@@ -269,12 +365,4 @@ function result = run_control_twostage(Xreal_time_target, Sensor_distr, N, GridM
     result.X_est_vis = X_est_eval;
     result.X_est_raw_vis = X_est_global;
     result.Sensor_traj_vis = Sensor_traj;
-end
-
-function Ps_i = get_sensor_ps(sensor_i, default_ps)
-if isfield(sensor_i, 'Ps') && ~isempty(sensor_i.Ps)
-    Ps_i = sensor_i.Ps;
-else
-    Ps_i = default_ps;
-end
 end

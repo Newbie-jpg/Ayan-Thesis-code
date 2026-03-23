@@ -31,12 +31,13 @@ end
 Sensor_init = Sensor;
 
 process_opt = set_default_fields(process_opt, struct( ...
-    'Ps', 0.99, ...
+    'Ps', 1, ...
     'Vx_thre', 200, ...
     'Vy_thre', 200, ...
     'Vz_thre', 200, ...
     'control_interval', 5, ...
-    'verbose', true));
+    'verbose', true, ...
+    'skip_online_filter', false));
 parallel_opt = set_default_fields(parallel_opt, struct( ...
     'process_inner_pool_max', 8));
 control_opt = set_default_fields(control_opt, struct( ...
@@ -72,9 +73,110 @@ for i = 1:N_sensor
     end
 end
 
+if process_opt.skip_online_filter
+    if ~isfield(control_opt, 'enable_oracle_tracking') || ~control_opt.enable_oracle_tracking
+        error(['PROCESS:SkipOnlineFilterRequiresOracle', newline, ...
+            '当前已设置 skip_online_filter=true（在线仅生成轨迹），', ...
+            '但 enable_oracle_tracking=false。', newline, ...
+            '该配置下在线阶段无法调用依赖滤波融合结果的 control_core。', ...
+            '请开启 oracle 控制，或关闭 skip_online_filter。']);
+    end
+
+    Time = 0;
+    control_interval = process_opt.control_interval;
+    last_action = [];
+    prev_heading_deg = zeros(1, N_sensor);
+    prev_visible_flags = false(1, N_sensor);
+    current_roles = repmat({'S'}, 1, N_sensor);
+    last_roles = current_roles;
+    oracle_warmup_steps = 0;
+    if isfield(control_opt, 'oracle_cfg') && isstruct(control_opt.oracle_cfg) && ...
+            isfield(control_opt.oracle_cfg, 'warmup_steps') && ~isempty(control_opt.oracle_cfg.warmup_steps)
+        oracle_warmup_steps = max(0, round(control_opt.oracle_cfg.warmup_steps));
+    end
+
+    decision_log = struct('times', [], 'track_cost', [], 'search_gain', [], ...
+        'cs_gain', [], 'info_gain', [], 'total_cost', [], 'selection', [], ...
+        'objective_mode', '', 'step_time_series', zeros(1, N), 'role_log', []);
+    decision_log.role_log{1} = current_roles;
+    decision_log.role_log{2} = current_roles;
+
+    total_steps = N - 2;
+    progress_refresh = max(1, floor(total_steps / 10));
+    for t = 3:N
+        timing_total = tic;
+        oracle_active = control_opt.enable_oracle_tracking && (t > oracle_warmup_steps);
+        if ~oracle_active
+            error('PROCESS:OracleWarmupNotSupportedInSkipMode', ...
+                'skip_online_filter=true 时，当前步无法使用非 oracle 控制逻辑。请将 warmup_steps 设为 0。');
+        end
+
+        if isempty(last_action) || mod(t - 3, control_interval) == 0
+            [action, current_roles, heading_deg, vis_flags] = build_oracle_guidance_actions( ...
+                Sensor, Xreal_time_target{t,1}, control_opt.target_init, ...
+                control_opt.fixed_search_target_groups, sensor, control_opt.oracle_cfg, t, prev_heading_deg, prev_visible_flags);
+            prev_heading_deg = heading_deg;
+            prev_visible_flags = vis_flags;
+            last_action = action;
+            last_roles = current_roles;
+
+            decision_log.times(end+1) = t; %#ok<AGROW>
+            decision_log.track_cost(end+1) = NaN; %#ok<AGROW>
+            decision_log.search_gain(end+1) = NaN; %#ok<AGROW>
+            decision_log.cs_gain(end+1) = NaN; %#ok<AGROW>
+            decision_log.info_gain(end+1) = NaN; %#ok<AGROW>
+            decision_log.total_cost(end+1) = NaN; %#ok<AGROW>
+            decision_log.selection(:, end+1) = zeros(N_sensor,1); %#ok<AGROW>
+            decision_log.objective_mode = 'oracle_fixed_combo';
+        else
+            action = last_action;
+            current_roles = last_roles;
+        end
+
+        for i = 1:N_sensor
+            act_beta = action(1, i);
+            act_epsilon = action(2, i);
+            dt_sec = sensor.T;
+            v_eff = sensor.v;
+            if strcmp(current_roles{i}, 'S') && isfield(control_opt, 'oracle_cfg') && ...
+                    isstruct(control_opt.oracle_cfg) && isfield(control_opt.oracle_cfg, 'search_speed_scale')
+                v_eff = sensor.v * control_opt.oracle_cfg.search_speed_scale;
+            end
+            dx = v_eff * cos(deg2rad(act_epsilon)) * cos(deg2rad(act_beta)) * dt_sec;
+            dy = v_eff * cos(deg2rad(act_epsilon)) * sin(deg2rad(act_beta)) * dt_sec;
+            dz = v_eff * sin(deg2rad(act_epsilon)) * dt_sec;
+            Sensor(i).location = Sensor(i).location + [dx; dy; dz];
+            Sensor_traj(:, t, i) = Sensor(i).location;
+        end
+
+        dt_total = toc(timing_total);
+        Time = Time + dt_total;
+        decision_log.step_time_series(t) = dt_total;
+        decision_log.role_log{t} = current_roles;
+
+        steps_done = t - 2;
+        if process_opt.verbose && m == 1 && isempty(getCurrentTask()) && (mod(steps_done, progress_refresh) == 0 || t == N)
+            avg_step = Time / steps_done;
+            steps_left = total_steps - steps_done;
+            eta_sec = avg_step * steps_left;
+            fprintf('>>> 轨迹生成进度：%d/%d 步，单步均耗时 %.2f s，预计剩余 %.1f s (%.1f min)\n', ...
+                steps_done, total_steps, avg_step, eta_sec, eta_sec/60);
+        end
+    end
+    Time = Time / (N - 2);
+
+    [OSPA, OSPA_sensor, Num_estimate, X_est_series] = evaluate_ospa_on_fixed_traj( ...
+        Xreal_time_target, Sensor_init, Sensor_traj, N, GridMap, process_opt, control_opt);
+    return;
+end
+
 %===预处理===
-% 保持传感器配置中的检测概率 Pd，不做 Pd=1 的硬化。
-% 对应 chapter2 理论：更新项需保留 (1-p_D) 未检测分量。
+% 与 chat3 一致：若检测概率很高，内部当成 1 来进行滤波
+for i = 1:N_sensor
+    if Sensor(i).Pd >= 0.99
+        Sensor(i).Pd = 1;
+    end
+end
 
 %======PHD最初估计值初始化======
 ALG3_PHD_initial;
@@ -142,7 +244,7 @@ for t = 3:N
         % 3. 执行滤波（内部对高斯分量做 parfor，充分利用多核）
         [Sensor(i).state] = ALG3_PHD1time_3d_ukf_distr(Sensor(i).Z_dicaer_global{t-2,1},...
             Sensor(i).Z_dicaer_global{t-1,1}, Sensor(i).Z_polar_part{t,1},...
-            Sensor(i).state, Sensor(i).Zr, Sensor(i).R_params, get_sensor_ps(Sensor(i), Ps), Sensor(i).Pd,...
+            Sensor(i).state, Sensor(i).Zr, Sensor(i).R_params, Ps, Sensor(i).Pd,...
             Vx_thre, Vy_thre, Vz_thre,...
             Sensor(i).location(1,1), Sensor(i).location(2,1), Sensor(i).location(3,1));   
 
@@ -273,13 +375,6 @@ for t = 3:N
   
 end
 
-function Ps_i = get_sensor_ps(sensor_i, default_ps)
-if isfield(sensor_i, 'Ps') && ~isempty(sensor_i.Ps)
-    Ps_i = sensor_i.Ps;
-else
-    Ps_i = default_ps;
-end
-end
 Time = Time / ( N - 2 ); % 单个融合周期时间计算
 
 %===分布式 OSPA 评估（固定轨迹重放滤波，解耦控制与评估）===

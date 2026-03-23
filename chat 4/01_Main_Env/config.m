@@ -8,6 +8,8 @@ addpath(genpath(chat4_root));
 sim_cfg = struct();
 sim_cfg.rng_seed = 10;
 rng(sim_cfg.rng_seed);
+% 评估链路开关：true=在线仅生成轨迹，滤波与OSPA统一在离线重放阶段计算（严格按 chat3 口径）
+sim_cfg.skip_online_filter = true;
 
 N = 100;         % 总仿真时间步数
 T = 1;           % 采样周期 (s)
@@ -98,7 +100,7 @@ sim_cfg.oracle.B = struct( ...
     'sigma_z', 0, ...
     'clip_max', 150, ...
     'rng_seed_base', sim_cfg.rng_seed + 2000, ...
-    'max_turn_deg', 40, ...      % B: 更严格转向约束
+    'max_turn_deg', 60, ...      % B: 更严格转向约束
     'search_speed_scale', 0.9, ...
     'warmup_steps', 0);         % 前15步不启用oracle引导，提升初期OSPA
 % 开关：true=使用“真值带噪引导策略”；false=回到原第三章严格控制核逻辑

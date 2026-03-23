@@ -1,1 +1,0 @@
-[PIMS_cell, loc_after, valid_idx] = PIMS_generate(X_prior, sensor_inf, sensor, L);

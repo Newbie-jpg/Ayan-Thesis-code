@@ -8,7 +8,7 @@ this_dir = fileparts(mfilename('fullpath'));      % chat 4/03_Compare_Eval
 chat4_root = fileparts(this_dir);                 % chat 4
 
 %% 1) 输入文件
-compare_file = fullfile(chat4_root, 'result_compare_20260321_225851.mat');
+compare_file = fullfile(chat4_root, 'result_compare_20260318_134307.mat');
 
 % 可选：真值轨迹来源（可配置多个，按顺序尝试）
 % 若都不可用，将按顺序尝试：
@@ -16,8 +16,7 @@ compare_file = fullfile(chat4_root, 'result_compare_20260321_225851.mat');
 %   B. truth_source_files 中的外部文件
 %   C. 运行 config.m + targetset() 生成
 truth_source_files = { ...
-    fullfile(chat4_root, '04_Data', 'Xreal_target_time.mat'), ...
-    fullfile(chat4_root, 'CoreData_cs_20260317_142047.mat') ...
+    fullfile(chat4_root, '04_Data', 'Xreal_target_time.mat')
 };
 % truth_source_files = {};
 
@@ -69,7 +68,7 @@ for a = 1:numel(results)
     end
     tag = sanitize_token(tag);
 
-    out_file = fullfile(output_dir, sprintf('CoreData_%s3search_%s.mat', tag, save_stamp));
+    out_file = fullfile(output_dir, sprintf('CoreData_%s3trace_%s.mat', tag, save_stamp));
     save(out_file, 'True_Target_Traj', 'True_Target_Time', 'Sensor_Traj', 'OSPA_Metric');
     fprintf('已导出: %s\n', out_file);
 end

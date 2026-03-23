@@ -14,7 +14,7 @@ clear; clc; close all;
 target_file   = 'C:\Users\Scarecrow\Desktop\Ayan Thesis code\chat 4\04_Data\Xreal_target_time.mat';
 sensor_file_A = 'C:\Users\Scarecrow\Desktop\Ayan Thesis code\chat 4\04_Data\CoreData_grid3norm_20260322_234505.mat';
 sensor_file_B = 'C:\Users\Scarecrow\Desktop\Ayan Thesis code\chat 4\04_Data\CoreData_cs3norm_20260322_234505.mat';
-ospa_file     = 'C:\Users\Scarecrow\Desktop\Ayan Thesis code\chat 4\03_Compare_Eval\Result_Fig_Ch4\OSPA_Compare3norm_20260322_234931.mat';
+ospa_file     = 'C:\Users\Scarecrow\Desktop\Ayan Thesis code\chat 4\03_Compare_Eval\Result_Fig_Ch4\OSPA_Compare3norm_20260323_152957.mat';
 
 label_A = '算法A';
 label_B = '算法B';
